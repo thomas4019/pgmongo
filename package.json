@@ -1,0 +1,30 @@
+{
+  "name": "pgmongo",
+  "version": "0.0.1",
+  "description": "implements the Mongo wire protocol and adapts queries to use Postgres jsonb.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thomas4019/postres-mongo-emulator.git"
+  },
+  "author": "Thomas Hansen",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/thomas4019/postres-mongo-emulator/issues"
+  },
+  "homepage": "https://github.com/thomas4019/postres-mongo-emulator#readme",
+  "dependencies": {
+    "bson-ext": "^2.0.0",
+    "debug": "^3.1.0",
+    "mongo-query-to-postgres-jsonb": "^0.1.5",
+    "pg": "^7.4.3"
+  },
+  "devDependencies": {
+    "eslint-config-airbnb-base": "^12.1.0",
+    "eslint-plugin-import": "^2.12.0"
+  }
+}
