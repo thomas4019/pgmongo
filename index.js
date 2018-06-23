@@ -5,6 +5,7 @@ const debug = require('debug')
 const debugQuery = debug('pgmongo:pgquery')
 const bson = new BSON([BSON.Binary, BSON.Code, BSON.DBRef, BSON.Decimal128, BSON.Double, BSON.Int32, BSON.Long, BSON.Map, BSON.MaxKey, BSON.MinKey, BSON.ObjectId, BSON.BSONRegExp, BSON.Symbol, BSON.Timestamp])
 const Long = BSON.Long
+const util = require('util')
 
 const OP_REPLY = 1
 const OP_QUERY = 2004
@@ -81,10 +82,19 @@ async function tryOrCreateTable(action, collectionName) {
 }
 
 var server = net.createServer(function (socket) {
-  socket.on('data', (data) => processRecord(socket, data));
+  socket.on('data', (data) => processRecord(socket, data))
 })
 
-async function crud(socket, reqId, databaseName, commandName, doc) {
+const convertToBSON = function(doc) {
+  if (doc._id && doc._id.length === 24) {
+    doc._id = BSON.ObjectID(doc._id)
+  }
+  return doc
+};
+
+let commands = ['find', 'count', 'update', 'insert', 'create', 'delete', 'drop', 'validate', 'listIndexes', 'createIndexes', 'renameCollection']
+
+async function crud(socket, reqId, databaseName, commandName, doc, build) {
   let collectionName = '"' + doc[commandName] + '"'
   if (commandName === 'find') {
     const filter = doc.filter
@@ -93,13 +103,13 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
     try {
       where = mongoToPostgres('data', filter)
       select = mongoToPostgres.convertSelect('data', doc.projection)
-    }
-    catch (err) {
+    } catch (err) {
       const data = {
         errmsg: 'in must be an array',
         ok: 0
       }
-      socket.write(createCommandReply(reqId, data, {}))
+      console.error('query error')
+      socket.write(build(reqId, data, {}))
       return true
     }
     let query = `SELECT ${select} FROM ${collectionName} WHERE ${where}`;
@@ -115,7 +125,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
     }
     if (doc.skip) {
       if (doc.skip < 0) {
-        socket.write(createCommandReply(reqId, { ok: 0, errmsg: 'negative skip not allowed' }, {}))
+        socket.write(build(reqId, { ok: 0, errmsg: 'negative skip not allowed' }, {}))
         return true
       }
       query += ' OFFSET ' + doc.skip;
@@ -127,7 +137,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       console.error(e)
       res = { rows: [] }
     }
-    const rows = res.rows.map((row) => row.data)
+    const rows = res.rows.map((row) => convertToBSON(row.data))
     debug('pgmongo:rows')(rows)
     const data = {
       'cursor': {
@@ -137,7 +147,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       },
       'ok': 1
     }
-    socket.write(createCommandReply(reqId, data, {}))
+    socket.write(build(reqId, data, {}))
     return true
   }
   if (commandName === 'count') {
@@ -153,7 +163,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       data.n = res.rows[0].count
       if (doc.skip) {
         if (doc.skip < 0) {
-          socket.write(createCommandReply(reqId, { ok: 0, errmsg: 'negative skip not allowed' }, {}))
+          socket.write(build(reqId, { ok: 0, errmsg: 'negative skip not allowed' }, {}))
           return true
         }
         data.n = Math.max(0, data.n - doc.skip)
@@ -164,7 +174,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
     } catch (e) {
       console.error(e)
     }
-    socket.write(createCommandReply(reqId, data, data))
+    socket.write(build(reqId, data, data))
     return true
   }
   if (commandName === 'update') {
@@ -177,7 +187,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       // TODO (handle multi)
       res = await doQuery(query)
       lastResult.n = res.rowCount
-      socket.write(createCommandReply(reqId, lastResult, lastResult))
+      socket.write(build(reqId, lastResult, lastResult))
       return true
     } catch (e) {
       console.error(e)
@@ -186,7 +196,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
           errmsg: e.message,
           ok: 0
         }
-        socket.write(createCommandReply(reqId, data, data))
+        socket.write(build(reqId, data, data))
         return true
       }
       // Can also upsert, fallback
@@ -204,11 +214,15 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       let query = `INSERT INTO ${collectionName} VALUES (${newValue})`
       const res = await doQuery(query)
       lastResult.n = res.rowCount
-      socket.write(createCommandReply(reqId, lastResult, lastResult))
     }
 
-    tryOrCreateTable(insert, collectionName)
+    await tryOrCreateTable(insert, collectionName)
+    socket.write(build(reqId, lastResult, lastResult))
     return true
+  }
+  if (commandName === 'create') {
+    lastResult.ok = 1
+    await createTable(collectionName);
   }
   if (commandName === 'delete') {
     async function del() {
@@ -218,9 +232,9 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       // TODO (handle multi)
       const res = await doQuery(query)
       lastResult.n = res.rowCount
-      return socket.write(createCommandReply(reqId, lastResult, lastResult))
+      return socket.write(build(reqId, lastResult, lastResult))
     }
-    tryOrCreateTable(del, collectionName)
+    await tryOrCreateTable(del, collectionName)
     return true
   }
   if (commandName === 'drop') {
@@ -231,7 +245,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
     } catch (e) {
       // often not an error if already doesn't exist
     }
-    socket.write(createCommandReply(reqId, lastResult, lastResult))
+    socket.write(build(reqId, lastResult, lastResult))
     return true
   }
   if (commandName === 'validate') {
@@ -249,13 +263,11 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       "errors" : [ ],
       "ok" : 1
     }
-    return socket.write(createCommandReply(reqId, data, data))
+    return socket.write(build(reqId, data, data))
   }
   if (commandName === 'listindexes') {
     const listIQuery = listIndicesQuery('data', doc[commandName])
     const indexRes = await doQuery(listIQuery)
-    console.log(listIQuery)
-    console.dir(indexRes)
     const indices = indexRes.rows.map((row) => ({
       v: 2,
       key: { _id: 1 },
@@ -270,7 +282,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       },
       ok: 1
     }
-    socket.write(createCommandReply(reqId, data, data))
+    socket.write(build(reqId, data, data))
     return true
   }
   if (commandName === 'createindexes') {
@@ -308,7 +320,7 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       }
       data.createIndexes.numIndexesAfter++;
     }
-    socket.write(createCommandReply(reqId, data, data))
+    socket.write(build(reqId, data, data))
     return true
   }
   if (commandName === 'renameCollection') {
@@ -325,21 +337,30 @@ async function crud(socket, reqId, databaseName, commandName, doc) {
       data.ok = 0
       console.error(e)
     }
-    socket.write(createCommandReply(reqId, data, data))
+    socket.write(build(reqId, data, data))
     return true
   }
 }
 
 async function processAdmin(socket, reqId, commandName, doc) {
   switch (commandName) {
-    case 'listDatabases':
-      const data = { 'databases': [{ 'name': 'admin' }, { 'name': 'racepass' }], 'ok': 1 }
+    case 'listdatabases':
+      const query = 'SELECT datname AS name FROM pg_database WHERE datistemplate = false';
+      let res;
+      try {
+        res = await doQuery(query)
+      } catch (e) {
+        console.error(e)
+        res = { rows: [] }
+      }
+      const rows = res.rows
+      const data = { 'databases': rows, 'ok': 1 }
       socket.write(createCommandReply(reqId, data, data))
       break
     case 'whatsmyuri':
       socket.write(createCommandReply(reqId, {}, { 'you': '127.0.0.1:56709', 'ok': 1 }))
       break
-    case 'getLog':
+    case 'getlog':
       if (doc.getLog === 'startupWarnings') {
         const log = {
           'totalLinesWritten': 1,
@@ -351,13 +372,13 @@ async function processAdmin(socket, reqId, commandName, doc) {
         return false
       }
       break
-    case 'replSetGetStatus':
+    case 'replsetgetstatus':
       socket.write(createCommandReply(reqId, {}, adminReplies.replSetGetStatus()))
       break
-    case 'serverStatus':
+    case 'serverstatus':
       socket.write(createCommandReply(reqId, adminReplies.getServerStatus(), {}))
       break
-    case 'currentOp':
+    case 'currentop':
       const reply = {
         inprog: [],
         ok: 1
@@ -370,22 +391,53 @@ async function processAdmin(socket, reqId, commandName, doc) {
   return true
 }
 
+let previousData;
+
 async function processRecord(socket, data) {
+  if (previousData) {
+    data = Buffer.concat([previousData, data])
+    previousData = null;
+  }
+
   const msgLength = data.readInt32LE(0)
   const reqId = data.readInt32LE(4)
   const opCode = data.readInt32LE(12)
   debug('pgmongo:opcode')(opCode)
+
+  if (data.length < msgLength - 1) {
+    previousData = data;
+    console.log('partial data received')
+    return;
+  }
 
   if (opCode === OP_QUERY) {
     const flags = data.readInt32LE(16)
     const nameEnd = data.indexOf('\0', 20) + 1
     const collectionName = data.toString('utf8', 20, nameEnd - 1)
     const documents = []
-    bson.deserializeStream(data, nameEnd + 8, 1, documents, 0)
-    const doc = documents[0]
-    if (collectionName === 'admin.$cmd' && doc.isMaster) {
+    try {
+      bson.deserializeStream(data, nameEnd + 8, 1, documents, 0)
+    } catch (e) {
+      console.error('error - missing or invalid body');
       return socket.write(createResponse(reqId, adminReplies.getIsMasterReply()))
     }
+    const doc = documents[0]
+    if (collectionName === 'admin.$cmd' && (doc.isMaster || doc.ismaster)) {
+      return socket.write(createResponse(reqId, adminReplies.getIsMasterReply()))
+    }
+    for (const command of commands) {
+      if (doc[command] || doc[command.toLowerCase()]) {
+        if (await crud(socket, reqId, '', command.toLowerCase(), doc, createResponse))
+          return
+      }
+    }
+
+    console.error('UNHANDLED REQUEST OP_QUERY')
+    console.dir({
+      collectionName,
+      documents
+    })
+    return socket.write(createCommandReply(reqId, { ok: 0 }, { ok: 0 }))
   } else if (opCode === OP_COMMAND) {
     const databaseEnd = data.indexOf('\0', 16) + 1
     const databaseName = data.toString('utf8', 16, databaseEnd - 1)
@@ -395,8 +447,10 @@ async function processRecord(socket, data) {
     bson.deserializeStream(data, commandEnd, 2, documents, 0)
     const doc = documents[0]
 
+    debug('pgmongo:indoc')(doc)
+
     try {
-      if (await crud(socket, reqId, databaseName, commandName, doc))
+      if (await crud(socket, reqId, databaseName, commandName, doc, createCommandReply))
         return
     } catch (e) {
       console.error(e)
@@ -407,7 +461,7 @@ async function processRecord(socket, data) {
         return
     }
 
-    if (commandName === 'ismaster'/* && doc.isMaster*/) {
+    if (commandName === 'ismaster') {
       return socket.write(createCommandReply(reqId, adminReplies.getIsMasterReply(), adminReplies.getIsMasterReply()))
     }
     if (commandName === 'buildinfo') {
@@ -431,6 +485,12 @@ async function processRecord(socket, data) {
     }
     if (commandName === 'getlasterror') {
       return socket.write(createCommandReply(reqId, lastResult, lastResult))
+    }
+    if (commandName === 'dropdatabase') {
+      const res = await doQuery("select string_agg('drop table \"' || tablename || '\" cascade', '; ') from pg_tables where schemaname = 'public'")
+      const dropQuery = res.rows[0].string_agg;
+      await doQuery(dropQuery);
+      return socket.write(createCommandReply(reqId, {}, { 'ok': 1 }))
     }
 
     console.error('UNHANDLED REQUEST')
@@ -475,6 +535,7 @@ function createCommandReply(reqId, metadata, commandReply) {
 }
 
 function createResponse(reqId, doc) {
+  debug('pgmongo:replyr')(doc)
   const docBuffer = bson.serialize(doc)
   const length = 36 + docBuffer.length
 

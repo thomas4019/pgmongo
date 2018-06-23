@@ -8,15 +8,21 @@ npm install -g pgmongo
 pgmongo [pg_database_name] [pg_host] [mongo_port] // e.g. pgmongo mydatabase localhost 27018
 ```
 
+# Current status
+Currently passes 69 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
+
 ## Missing Features
-* Handling ObjectIDs
-* BSON Features
+* ObjectIDs (other than _id)
+* Preserve BSON
+* (min)[https://docs.mongodb.com/manual/reference/method/cursor.min/] and max
 ** Real floats including NaN and Infinity
 * Cursor support
-* Capped collections
 * Queries matching array elements
 * Remove indexes - try jstests/core/in5.js
 * findandmodify
+* Capped collections
+* aggregation framework
+* explain queries
 
 ## Resources
 * [MongoDB Wire Protocol](https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/)
