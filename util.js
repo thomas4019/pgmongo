@@ -1,10 +1,10 @@
 const BSON = require('bson-ext')
-const bson = new BSON([BSON.Binary, BSON.Code, BSON.DBRef, BSON.Decimal128, BSON.Double, BSON.Int32, BSON.Long, BSON.Map, BSON.MaxKey, BSON.MinKey, BSON.ObjectId, BSON.BSONRegExp, BSON.Symbol, BSON.Timestamp])
+const Long = BSON.Long
 const _ = require('lodash')
 
 exports.describeTypes = function (doc) {
   if (doc._bsontype) {
-    return doc._bsontype;
+    return doc._bsontype
   } else if (Array.isArray(doc)) {
     const types = doc.map(exports.describeTypes)
     const uniqueTypes = _.uniqWith(types, _.isEqual)
@@ -25,4 +25,37 @@ exports.describeTypes = function (doc) {
     }
     return out
   }
+}
+
+exports.createCursor = function (ns, firstBatch, id = Long.fromNumber(0)) {
+  return {
+    cursor: {
+      id,
+      ns,
+      firstBatch
+    },
+    ok: 1
+  }
+}
+
+exports.listIndicesQuery = function (fieldName, collectionName) {
+  return `select
+    t.relname as table_name,
+    i.relname as index_name,
+    a.attname as column_name
+from
+    pg_class t,
+    pg_class i,
+    pg_index ix,
+    pg_attribute a
+where
+    t.oid = ix.indrelid
+    and i.oid = ix.indexrelid
+    and a.attrelid = t.oid
+    and t.relkind = 'r'
+    and t.relname = '${collectionName}'
+    and a.attname = '${fieldName}'
+order by
+    t.relname,
+    i.relname;`
 }

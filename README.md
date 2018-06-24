@@ -9,7 +9,7 @@ pgmongo [pg_database_name] [pg_host] [mongo_port] // e.g. pgmongo mydatabase loc
 ```
 
 # Current status
-Currently passes 69 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
+Currently passes 138 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
 
 ## Missing Features
 * ObjectIDs (other than _id)

@@ -1,8 +1,7 @@
 const assert = require('chai').assert
 const BSON = require('bson-ext')
-const bson = new BSON([BSON.Binary, BSON.Code, BSON.DBRef, BSON.Decimal128, BSON.Double, BSON.Int32, BSON.Long, BSON.Map, BSON.MaxKey, BSON.MinKey, BSON.ObjectId, BSON.BSONRegExp, BSON.Symbol, BSON.Timestamp])
 const util =  require('../util')
-const describeTypes = util.describeTypes;
+const describeTypes = util.describeTypes
 
 describe('util: ', function() {
   it('basic type', function () {
