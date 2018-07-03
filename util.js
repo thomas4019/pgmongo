@@ -9,7 +9,7 @@ exports.describeTypes = function (doc) {
     const types = doc.map(exports.describeTypes)
     const uniqueTypes = _.uniqWith(types, _.isEqual)
     if (uniqueTypes.length > 1) {
-      throw new Error('arrays containing multiple data types are not allowed')
+      //throw new Error('arrays containing multiple data types are not allowed')
     }
     if (_.isUndefined(uniqueTypes[0])) {
       return []
@@ -25,6 +25,23 @@ exports.describeTypes = function (doc) {
     }
     return out
   }
+}
+
+exports.getArrayPaths = function (doc) {
+  const arrayPaths = []
+
+  function recursiveHepler(path, doc) {
+    if (Array.isArray(doc)) {
+      arrayPaths.push(path)
+    } else if (typeof doc === 'object') {
+      for (const key of Object.keys(doc)) {
+        recursiveHepler(path ? (path + '.' + key) : key, doc[key])
+      }
+    }
+  }
+
+  recursiveHepler('', doc)
+  return arrayPaths
 }
 
 exports.createCursor = function (ns, firstBatch, id = Long.fromNumber(0)) {

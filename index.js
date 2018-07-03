@@ -2,6 +2,7 @@ const net = require('net')
 const BSON = require('bson-ext')
 const mongoToPostgres = require('mongo-query-to-postgres-jsonb')
 const debug = require('debug')
+const _ = require('lodash')
 
 const util = require('./util')
 const wire = require('./wireprotocol')
@@ -63,14 +64,22 @@ const convertToBSON = function(doc) {
 
 let commands = ['find', 'count', 'update', 'insert', 'create', 'delete', 'drop', 'validate', 'listIndexes', 'createIndexes', 'renameCollection']
 
+const arrayPathsMap = {}
+
+function getArrayPaths(collectionName) {
+  debug('pgmongo:arraypaths')(collectionName + ' ' + arrayPathsMap[collectionName])
+  return arrayPathsMap[collectionName] || []
+}
+
 async function crud(socket, reqId, databaseName, commandName, doc, build) {
-  let collectionName = '"' + doc[commandName] + '"'
+  const rawCollectionName = doc[commandName]
+  let collectionName = '"' + rawCollectionName + '"'
   if (commandName === 'find') {
     const filter = doc.filter
     let where = ''
     let select = ''
     try {
-      where = mongoToPostgres('data', filter)
+      where = mongoToPostgres('data', filter, getArrayPaths(rawCollectionName))
       select = mongoToPostgres.convertSelect('data', doc.projection)
     } catch (err) {
       const data = {
@@ -78,6 +87,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
         ok: 0
       }
       console.error('query error')
+      console.error(err)
       socket.write(build(reqId, data, {}))
       return true
     }
@@ -113,16 +123,16 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     return true
   }
   if (commandName === 'count') {
-    const where = mongoToPostgres('data', doc.query)
+    if (doc.skip && doc.skip < 0) {
+      socket.write(build(reqId, { ok: 0, errmsg: 'negative skip not allowed' }, {}))
+      return true
+    }
+    const where = mongoToPostgres('data', doc.query, getArrayPaths(rawCollectionName))
     const data = { n: 0, ok: 1 }
     try {
       const res = await doQuery(`SELECT COUNT(*) FROM ${collectionName} WHERE ${where}`)
       data.n = res.rows[0].count
       if (doc.skip) {
-        if (doc.skip < 0) {
-          socket.write(build(reqId, { ok: 0, errmsg: 'negative skip not allowed' }, {}))
-          return true
-        }
         data.n = Math.max(0, data.n - doc.skip)
       }
       if (doc.limit) {
@@ -136,7 +146,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
   }
   if (commandName === 'update') {
     const update = doc.updates[0]
-    const where = mongoToPostgres('data', update.q)
+    const where = mongoToPostgres('data', update.q, getArrayPaths(rawCollectionName))
     let res
     try {
       const newValue = mongoToPostgres.convertUpdate('data', update.u)
@@ -165,13 +175,14 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
   }
   if (commandName === 'insert') {
     const newValue = mongoToPostgres.convertUpdate('data', doc.documents[0])
+    arrayPathsMap[rawCollectionName] = _.union(arrayPathsMap[rawCollectionName], util.getArrayPaths(doc.documents[0]))
     async function insert() {
       const res = await doQuery(`INSERT INTO ${collectionName} VALUES (${newValue})`)
-      lastResult.n = res.rowCount
+      const data = { n: res.rowCount, nInserted: res.rowCount, updatedExisting: false, ok: 1 }
+      socket.write(build(reqId, data, {}))
     }
 
     await tryOrCreateTable(insert, collectionName)
-    socket.write(build(reqId, lastResult, lastResult))
     return true
   }
   if (commandName === 'create') {
@@ -213,7 +224,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     return socket.write(build(reqId, data, data))
   }
   if (commandName === 'listindexes') {
-    const listIQuery = util.listIndicesQuery('data', doc[commandName])
+    const listIQuery = util.listIndicesQuery('data', rawCollectionName)
     const indexRes = await doQuery(listIQuery)
     const indices = indexRes.rows.map((row) => ({
       v: 2,
