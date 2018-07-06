@@ -62,7 +62,8 @@ const convertToBSON = function(doc) {
   return doc
 }
 
-let commands = ['find', 'count', 'update', 'insert', 'create', 'delete', 'drop', 'validate', 'listIndexes', 'createIndexes', 'renameCollection']
+let commands = ['find', 'count', 'update', 'insert', 'create', 'delete', 'drop', 'validate',
+  'listIndexes', 'createIndexes', 'deleteIndexes', 'renameCollection']
 
 const arrayPathsMap = {}
 
@@ -72,7 +73,8 @@ function getArrayPaths(collectionName) {
 }
 
 async function crud(socket, reqId, databaseName, commandName, doc, build) {
-  const rawCollectionName = doc[commandName]
+  const normalizedCommandName = commandName.toLowerCase()
+  let rawCollectionName = doc[commandName] || doc[normalizedCommandName]
   let collectionName = '"' + rawCollectionName + '"'
   if (commandName === 'find') {
     const filter = doc.filter
@@ -91,13 +93,12 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
       socket.write(build(reqId, data, {}))
       return true
     }
-    let query = `SELECT ${select} FROM ${collectionName} WHERE ${where}`
+    let query = `SELECT ${select} FROM ${collectionName}`
+    if (where !== 'TRUE') {
+      query += ` WHERE ${where}`
+    }
     if (doc.sort) {
-      if (doc.collation && doc.collation.numericOrdering) {
-        query += ' ORDER BY cast(' + mongoToPostgres.convertSort('data', doc.sort) + ' as double precision)'
-      } else {
-        query += ' ORDER BY ' + mongoToPostgres.convertSort('data', doc.sort)
-      }
+      query += ' ORDER BY ' + mongoToPostgres.convertSort('data', doc.sort, doc.collation && doc.collation.numericOrdering)
     }
     if (doc.limit) {
       query += ' LIMIT ' + Math.abs(doc.limit)
@@ -151,10 +152,31 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     try {
       const newValue = mongoToPostgres.convertUpdate('data', update.u)
       // TODO (handle multi)
+      await createTable(collectionName)
       res = await doQuery(`UPDATE ${collectionName} SET data = ${newValue} WHERE ${where}`)
-      lastResult.n = res.rowCount
-      socket.write(build(reqId, lastResult, lastResult))
-      return true
+      if (res.rowCount === 0 && update.upsert) {
+        const changes = update.u || {}
+        if (mongoToPostgres.countUpdateSpecialKeys(changes) === 0) {
+          // TODO: expand dot notation
+          _.assign(changes, update.q)
+        } else {
+          changes['$set'] = changes['$set'] || {}
+          _.assign(changes['$set'], update.q)
+        }
+        const newValue = mongoToPostgres.convertUpdate('data', changes, true)
+        async function insert() {
+          const res = await doQuery(`INSERT INTO ${collectionName} VALUES (${newValue})`)
+          const data = { n: res.rowCount, nInserted: res.rowCount, updatedExisting: false, ok: 1 }
+          socket.write(build(reqId, data, {}))
+        }
+
+        await tryOrCreateTable(insert, collectionName)
+        return true
+      } else {
+        lastResult.n = res.rowCount
+        socket.write(build(reqId, lastResult, lastResult))
+        return true
+      }
     } catch (e) {
       console.error(e)
       if (e.message.includes('_id')) {
@@ -166,7 +188,8 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
         return true
       }
       // Can also upsert, fallback
-      if (typeof update.u._id !== 'undefined' || update.upsert) {
+      const isChangingId = typeof update.u._id !== 'undefined'
+      if (isChangingId) {
         console.error('failed to update, falling back to insert')
         commandName = 'insert'
         doc.documents = [update.u]
@@ -174,10 +197,10 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     }
   }
   if (commandName === 'insert') {
-    const newValue = mongoToPostgres.convertUpdate('data', doc.documents[0])
     arrayPathsMap[rawCollectionName] = _.union(arrayPathsMap[rawCollectionName], util.getArrayPaths(doc.documents[0]))
+    const newValues = doc.documents.map((values) => '(' + mongoToPostgres.convertUpdate('data', values) + ')')
     async function insert() {
-      const res = await doQuery(`INSERT INTO ${collectionName} VALUES (${newValue})`)
+      const res = await doQuery(`INSERT INTO ${collectionName} VALUES ${newValues.join(',')}`)
       const data = { n: res.rowCount, nInserted: res.rowCount, updatedExisting: false, ok: 1 }
       socket.write(build(reqId, data, {}))
     }
@@ -191,7 +214,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
   }
   if (commandName === 'delete') {
     async function del() {
-      const where = mongoToPostgres('data', doc.deletes[0].q)
+      const where = mongoToPostgres('data', doc.deletes[0].q, getArrayPaths(rawCollectionName))
       // TODO (handle multi)
       const res = await doQuery(`DELETE FROM ${collectionName} WHERE ${where}`)
       lastResult.n = res.rowCount
@@ -223,7 +246,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     }
     return socket.write(build(reqId, data, data))
   }
-  if (commandName === 'listindexes') {
+  if (normalizedCommandName === 'listindexes') {
     const listIQuery = util.listIndicesQuery('data', rawCollectionName)
     const indexRes = await doQuery(listIQuery)
     const indices = indexRes.rows.map((row) => ({
@@ -236,7 +259,9 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     socket.write(build(reqId, data, data))
     return true
   }
-  if (commandName === 'createindexes') {
+  if (normalizedCommandName === 'createindexes') {
+    rawCollectionName = rawCollectionName || doc['createIndexes']
+    collectionName = '"' + rawCollectionName + '"'
     const data = {
       createIndexes: {
         numIndexesBefore: 0,
@@ -245,7 +270,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
       },
       ok: 1
     }
-    const listIQuery = util.listIndicesQuery('data', doc.createIndexes)
+    const listIQuery = util.listIndicesQuery('data', rawCollectionName)
     const indexRes = await doQuery(listIQuery)
     const indices = indexRes.rows.map((row) => row.index_name)
     data.createIndexes.numIndexesBefore = indices.length
@@ -271,10 +296,14 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
       }
       data.createIndexes.numIndexesAfter++
     }
+    if (normalizedCommandName === 'deleteindexes') {
+      // Todo
+      // Also handle case where index is "*" and all need to be dropped.
+    }
     socket.write(build(reqId, data, data))
     return true
   }
-  if (commandName === 'renameCollection') {
+  if (normalizedCommandName === 'renameCollection') {
     const data = { ok: 1 }
     collectionName = doc[commandName].split('.', 2)[1]
     const newName = doc.to.split('.', 2)[1]
@@ -358,7 +387,7 @@ async function processRecord(socket, data) {
     }
     for (const command of commands) {
       if (doc[command] || doc[command.toLowerCase()]) {
-        if (await crud(socket, reqId, '', command.toLowerCase(), doc, wire.createResponse))
+        if (await crud(socket, reqId, '', command, doc, wire.createResponse))
           return
       }
     }
@@ -378,13 +407,14 @@ async function processRecord(socket, data) {
         return
     }
 
+    let res
     switch (commandName) {
       case 'ismaster':
         return socket.write(wire.createCommandReply(reqId, adminReplies.getIsMasterReply(), adminReplies.getIsMasterReply()))
       case 'buildinfo':
         return socket.write(wire.createCommandReply(reqId, adminReplies.getBuildInfo(), {}))
       case 'listcollections':
-        let res = await client.query('SELECT table_name FROM information_schema.tables WHERE table_schema=\'public\' AND table_type=\'BASE TABLE\';')
+        res = await client.query('SELECT table_name FROM information_schema.tables WHERE table_schema=\'public\' AND table_type=\'BASE TABLE\';')
         const tables = res.rows.map((row) => ({ name: row.table_name, type: 'collection', options: {}, info: { readOnly: false } }))
         const data = util.createCursor(`${databaseName}.$cmd.listCollections`, tables)
         return socket.write(wire.createCommandReply(reqId, data, data))

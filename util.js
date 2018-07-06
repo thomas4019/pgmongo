@@ -33,7 +33,7 @@ exports.getArrayPaths = function (doc) {
   function recursiveHepler(path, doc) {
     if (Array.isArray(doc)) {
       arrayPaths.push(path)
-    } else if (typeof doc === 'object') {
+    } else if (doc && typeof doc === 'object') {
       for (const key of Object.keys(doc)) {
         recursiveHepler(path ? (path + '.' + key) : key, doc[key])
       }

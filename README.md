@@ -12,6 +12,9 @@ pgmongo [pg_database_name] [pg_host] [mongo_port] // e.g. pgmongo mydatabase loc
 # Current status
 Currently passes 150 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
 
+## Features
+* Setting deep fields even when top level keys do not exist
+
 ## Missing Features (ordered by priority)
 * ObjectIDs (other than _id)
 * Preserve BSON
@@ -24,6 +27,7 @@ Currently passes 150 of the 916 core mongo [jstests](https://github.com/mongodb/
 * aggregation framework
 * explain queries
 * numeric keys (currently numbers are assumed to be an array index)
+* Preserve the initial order of object keys
 
 # Cannot support
 * NaN and Infinity
