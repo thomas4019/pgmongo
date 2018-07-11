@@ -1,37 +1,62 @@
-# postres-mongo-emulator
+![pgmongo](https://user-images.githubusercontent.com/406149/42555295-9ccff858-849c-11e8-81dd-7d5fa5e7bf94.png)
+Replace MongoDB using Posgres with its new jsonb fields.
+This is a drop-in replacement which imitates a MongoDB server, but uses Postgres under the hood.
+
 This implements the MongoDB wire protocol and adapts queries to work with a PostgreSQL database using jsonb fields.
-This project aims to be a full drop-in replacement of MongoDB. It's a work in progress, but is in a near usable state.
 I've tested it with [Keystone.js](http://keystonejs.com/) and it seemed to work reasonably well.
 
 # Getting Started
+pgmongo requires node 8 or newer. Then run the following.
 ```bash
 npm install -g pgmongo
-pgmongo [pg_database_name] [pg_host] [mongo_port] // e.g. pgmongo mydatabase localhost 27018
+pgmongo mydatabase  # replace mydatabase with your PostgreSQL database name.
+```
+This will start a mongo-like server on port 27017. If you already have mongo running on your machine you can start it on a different port with the following.
+```bash
+pgmongo mydatabase localhost 27018 
 ```
 
+# Supported Features
+* listing/creating/dropping collections
+* find (including sorting, skip and offset)
+* count, distinct
+* update (including support for upserting)
+* insert (including batch insertion)
+* deletion
+* creating and listing basic indexes
+* most custom parameters like $gt, $exists, $regex, $push, $set, $unset, etc.
+See [this repo](/https://github.com/thomas4019/mongo-query-to-postgres-jsonb)  for the full list
+* admin commands (returns mostly stubbed/fake data)
+
 # Current status
-Currently passes 150 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
+It's not production ready yet, but definitely working enough to play around with or use in basic apps.  
+Currently passes 190 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
 
-## Features
-* Setting deep fields even when top level keys do not exist
+# Example Queries
+```
+db.users.find({ lastLogin: { $lte: '2016' } }) -> SELECT data FROM "users" WHERE data->>'lastLogin'<='2016' 
+db.users.update({}, { $set: { active: true } }) -> UPDATE "users" SET data = jsonb_set(data,'{active}','true'::jsonb)
+db.users.find({}, { firstName: 1 } ) -> SELECT jsonb_build_object('firstName', data->'firstName', '_id', data->'_id') as data FROM "users" 
+```
 
-## Missing Features (ordered by priority)
-* ObjectIDs (other than _id)
-* Preserve BSON
-* Queries matching array elements
-* Cursor support
-* Indexes (add and remove)
+## Missing Features / Roadmap (ordered by priority)
+Note: contributions/PRs are very much welcome.
+* Support for findandmodify
+* Better for queries matching array elements
+* Preserve BSON (Dates, ObjectIDs, other than _id)
+* Cursors (currently all data is returned in first result)
+* Better Indexes support (not sure if compound indexes are possible)
 * [min](https://docs.mongodb.com/manual/reference/method/cursor.min/) and max
-* findandmodify
+* Support numeric object keys (currently numbers are assumed to be an array index)
 * Capped collections
-* aggregation framework
+* geo support
 * explain queries
-* numeric keys (currently numbers are assumed to be an array index)
-* Preserve the initial order of object keys
+* aggregation framework/map reduce queries
 
-# Cannot support
+### Likely Cannot support
 * NaN and Infinity
-* Non-homogeneous data
+* Preserve the initial order of object keys
+* $eval and $where
 
 ## Resources
 * [MongoDB Wire Protocol](https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/)

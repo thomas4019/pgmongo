@@ -56,7 +56,7 @@ var server = net.createServer(function (socket) {
 })
 
 const convertToBSON = function(doc) {
-  if (doc._id && doc._id.length === 24) {
+  if (doc && doc._id && doc._id.length === 24) {
     doc._id = BSON.ObjectID(doc._id)
   }
   return doc
@@ -72,27 +72,54 @@ function getArrayPaths(collectionName) {
   return arrayPathsMap[collectionName] || []
 }
 
+function safeWhereConversion(filter, collectionName) {
+  try {
+    return mongoToPostgres('data', filter, getArrayPaths(collectionName))
+  } catch (err) {
+    const data = {
+      errmsg: 'in must be an array',
+      code: 2,
+      codeName: 'BadValue',
+      ok: 0
+    }
+    console.error('query error')
+    console.error(err)
+    throw data
+  }
+}
+
 async function crud(socket, reqId, databaseName, commandName, doc, build) {
   const normalizedCommandName = commandName.toLowerCase()
   let rawCollectionName = doc[commandName] || doc[normalizedCommandName]
   let collectionName = '"' + rawCollectionName + '"'
-  if (commandName === 'find') {
-    const filter = doc.filter
-    let where = ''
-    let select = ''
-    try {
-      where = mongoToPostgres('data', filter, getArrayPaths(rawCollectionName))
-      select = mongoToPostgres.convertSelect('data', doc.projection)
-    } catch (err) {
-      const data = {
-        errmsg: 'in must be an array',
-        ok: 0
-      }
-      console.error('query error')
-      console.error(err)
-      socket.write(build(reqId, data, {}))
+  if (commandName === 'distinct') {
+    if ((doc.query && typeof doc.query !== 'object') || typeof doc.key !== 'string') {
+      socket.write(build(reqId, { ok: 0, errmsg: '"query" had the wrong type. Expected object or null,', code: 14 }, {}))
+      //throw new Error('\\"query\\" had the wrong type. Expected object or null, found ' + typeof doc.query)
       return true
     }
+    const filter = doc.query || {}
+    let where = safeWhereConversion(filter, rawCollectionName)
+    const distinctField = mongoToPostgres.pathToText(['data'].concat(doc.key.split('.')), false)
+    const arrayCondition = `jsonb_typeof(${distinctField})='array'`
+    const query1 = `SELECT DISTINCT ${distinctField} AS data FROM ${collectionName} WHERE ${where} AND NOT ${arrayCondition}`
+    const query2 = `SELECT DISTINCT jsonb_array_elements(${distinctField}) AS data FROM ${collectionName} WHERE ${where} AND ${arrayCondition}`
+    const query = `${query1} UNION ${query2}`
+    async function find() {
+      return await doQuery(query)
+    }
+    res = await tryOrCreateTable(find, collectionName)
+    const rows = res.rows.map((row) => convertToBSON(row.data))
+    debug('pgmongo:rows')(rows)
+    const data = { values: rows, ok: 1 }
+    socket.write(build(reqId, data, {}))
+    return true
+  }
+  if (commandName === 'find') {
+    const filter = doc.filter
+    const where = safeWhereConversion(filter, rawCollectionName)
+    let select = mongoToPostgres.convertSelect('data', doc.projection)
+
     let query = `SELECT ${select} FROM ${collectionName}`
     if (where !== 'TRUE') {
       query += ` WHERE ${where}`
@@ -112,7 +139,10 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     }
     let res
     try {
-      res = await doQuery(query)
+      async function find() {
+        return await doQuery(query)
+      }
+      res = await tryOrCreateTable(find, collectionName)
     } catch (e) {
       console.error(e)
       res = { rows: [] }
@@ -216,7 +246,12 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     async function del() {
       const where = mongoToPostgres('data', doc.deletes[0].q, getArrayPaths(rawCollectionName))
       // TODO (handle multi)
-      const res = await doQuery(`DELETE FROM ${collectionName} WHERE ${where}`)
+      let query = `DELETE FROM ${collectionName} WHERE ${where}`
+      if (doc.deletes[0].limit) {
+        // TODO: handle limits on deletion
+        //query += ' LIMIT ' + doc.deletes[0].limit
+      }
+      const res = await doQuery(query)
       lastResult.n = res.rowCount
       return socket.write(build(reqId, lastResult, lastResult))
     }
@@ -380,6 +415,18 @@ async function processRecord(socket, data) {
     previousData = data
     return console.log('partial data received')
   }
+
+  try {
+    await handleRecord(socket, data, opCode, reqId)
+  } catch (e) {
+    console.error(e)
+    if (e.code) {
+      return socket.write(wire.createCommandReply(reqId, e, {}))
+    }
+    return socket.write(wire.createCommandReply(reqId, { errmsg: e.message, ok: 0 }, { ok: 0 }))
+  }
+}
+async function handleRecord(socket, data, opCode, reqId) {
   if (opCode === wire.OP_QUERY) {
     const { doc, collectionName } = wire.parseQuery(data)
     if (collectionName === 'admin.$cmd' && (doc.isMaster || doc.ismaster)) {
@@ -395,12 +442,8 @@ async function processRecord(socket, data) {
     return socket.write(wire.createCommandReply(reqId, { ok: 0 }, { ok: 0 }))
   } else if (opCode === wire.OP_COMMAND) {
     const { databaseName, commandName, doc } = wire.parseCommand(data)
-    try {
-      if (await crud(socket, reqId, databaseName, commandName, doc, wire.createCommandReply))
-        return
-    } catch (e) {
-      console.error(e)
-    }
+    if (await crud(socket, reqId, databaseName, commandName, doc, wire.createCommandReply))
+      return
 
     if (databaseName === 'admin' || databaseName === 'db') {
       if (await processAdmin(socket, reqId, commandName, doc))
