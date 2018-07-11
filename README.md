@@ -1,8 +1,14 @@
-![pgmongo](https://user-images.githubusercontent.com/406149/42555295-9ccff858-849c-11e8-81dd-7d5fa5e7bf94.png)
-Replace MongoDB using Posgres with its new jsonb fields.
-This is a drop-in replacement which imitates a MongoDB server, but uses Postgres under the hood.
+<p align="center">
+  <img alt="pgmongo logo" src="https://user-images.githubusercontent.com/406149/42555295-9ccff858-849c-11e8-81dd-7d5fa5e7bf94.png">
+  <p align="center">Replace MongoDB with PosgreSQL</p>
+</p>
 
-This implements the MongoDB wire protocol and adapts queries to work with a PostgreSQL database using jsonb fields.
+## What is pgmongo?
+- **Drop-in replacement** The goal is for applications to need no code changes because pgmongo imitates a MongoDB server.
+- **Stateless proxy** pgmongo converts all queries and proxies to a Posgres database.
+- **JSON** Support for regular JSON data is better than full BSON since jsonb does not have all the advanced data types. 
+
+This implements the [MongoDB wire protocol](https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/) and adapts queries to work with a PostgreSQL database using jsonb fields.
 I've tested it with [Keystone.js](http://keystonejs.com/) and it seemed to work reasonably well.
 
 # Getting Started
@@ -32,7 +38,7 @@ See [this repo](/https://github.com/thomas4019/mongo-query-to-postgres-jsonb)  f
 It's not production ready yet, but definitely working enough to play around with or use in basic apps.  
 Currently passes 190 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
 
-# Example Queries
+# Example Query Conversions
 ```
 db.users.find({ lastLogin: { $lte: '2016' } }) -> SELECT data FROM "users" WHERE data->>'lastLogin'<='2016' 
 db.users.update({}, { $set: { active: true } }) -> UPDATE "users" SET data = jsonb_set(data,'{active}','true'::jsonb)
@@ -59,8 +65,7 @@ Note: contributions/PRs are very much welcome.
 * $eval and $where
 
 ## Resources
-* [MongoDB Wire Protocol](https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/)
-* [Admin Commands](https://docs.mongodb.com/manual/reference/command/nav-administration/)
+* [Mongo Admin Commands](https://docs.mongodb.com/manual/reference/command/nav-administration/)
 * [JSONB Index Performance](http://bitnine.net/blog-postgresql/postgresql-internals-jsonb-type-and-its-indexes/)
 
 ## Related Projects
