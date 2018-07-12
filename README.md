@@ -11,8 +11,8 @@
 This implements the [MongoDB wire protocol](https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/) and adapts queries to work with a PostgreSQL database using jsonb fields.
 I've tested it with [Keystone.js](http://keystonejs.com/) and it seemed to work reasonably well.
 
-# Getting Started
-pgmongo requires node 8 or newer. Then run the following.
+## Getting Started
+pgmongo requires node 8 or newer and Postgres 9.4+. Then run the following.
 ```bash
 npm install -g pgmongo
 pgmongo mydatabase  # replace mydatabase with your PostgreSQL database name.
@@ -22,7 +22,7 @@ This will start a mongo-like server on port 27017. If you already have mongo run
 pgmongo mydatabase localhost 27018 
 ```
 
-# Supported Features
+## Supported Features
 * listing/creating/dropping collections
 * find (including sorting, skip and offset)
 * count, distinct
@@ -38,7 +38,7 @@ See [this repo](https://github.com/thomas4019/mongo-query-to-postgres-jsonb)  fo
 It's not production ready yet, but definitely working enough to play around with or use in basic apps.  
 Currently passes 190 of the 916 core mongo [jstests](https://github.com/mongodb/mongo/tree/master/jstests/core).
 
-# Example Query Conversions
+## Example Query Conversions
 ```
 db.createCollection('users')  ->  CREATE TABLE IF NOT EXISTS "users" (data jsonb)
 db.users.find({ lastLogin: { $lte: '2016' } })  ->  SELECT data FROM "users" WHERE data->>'lastLogin'<='2016'

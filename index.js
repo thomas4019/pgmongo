@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const net = require('net')
 const BSON = require('bson-ext')
 const mongoToPostgres = require('mongo-query-to-postgres-jsonb')
