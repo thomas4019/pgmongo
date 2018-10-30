@@ -11,14 +11,17 @@ const adminReplies = require('./admin')
 
 const args = process.argv.slice(2)
 if (args.length < 1) {
-  console.error('node index.js <database> [<pghost>] [<mongoport>]')
+  console.error('node index.js [<pghost>] [<mongoport>]')
   return
 }
 
-const pgHost = args[1] || 'localhost'
+const createMissingDatabases = true
+const pgHost = args[0] || 'localhost'
+const mongoPort = parseInt(args[1] || '27018')
 const { Client } = require('pg')
-const client = new Client({ database: args[0], host: pgHost })
-client.connect()
+
+// database -> client
+const clients = {}
 
 let lastResult = {
   n: 0,
@@ -30,16 +33,35 @@ let lastResult = {
   ok: 1
 }
 
-async function doQuery(pgQuery) {
+async function createDatabase(databaseName) {
+  await doQuery('postgres', 'CREATE DATABASE ' + databaseName)
+}
+
+async function doQuery(database, pgQuery) {
+  if (!clients[database]) {
+    try {
+      const client = new Client({ database, host: pgHost })
+      clients[database] = client
+      await client.connect()
+    } catch (e2) {
+      if (database !== 'postgres' && createMissingDatabases) {
+        await createDatabase(database);
+        const client = new Client({ database, host: pgHost })
+        clients[database] = client
+        await client.connect()
+      }
+    }
+  }
+
   debug('pgmongo:pgquery')(pgQuery)
-  return await client.query(pgQuery)
+  return await clients[database].query(pgQuery)
 }
 
-async function createTable(collectionName) {
-  await doQuery(`CREATE TABLE IF NOT EXISTS ${collectionName} (data jsonb)`)
+async function createTable(databaseName, collectionName) {
+  await doQuery(databaseName, `CREATE TABLE IF NOT EXISTS ${collectionName} (data jsonb)`)
 }
 
-async function tryOrCreateTable(action, collectionName) {
+async function tryOrCreateTable(action, databaseName, collectionName) {
   try {
     return await action()
   } catch (e) {
@@ -106,10 +128,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     const query1 = `SELECT DISTINCT ${distinctField} AS data FROM ${collectionName} WHERE ${where} AND NOT ${arrayCondition}`
     const query2 = `SELECT DISTINCT jsonb_array_elements(${distinctField}) AS data FROM ${collectionName} WHERE ${where} AND ${arrayCondition}`
     const query = `${query1} UNION ${query2}`
-    async function find() {
-      return await doQuery(query)
-    }
-    res = await tryOrCreateTable(find, collectionName)
+    const res = await tryOrCreateTable(async () => await doQuery(databaseName, query), databaseName, collectionName)
     const rows = res.rows.map((row) => convertToBSON(row.data))
     debug('pgmongo:rows')(rows)
     const data = { values: rows, ok: 1 }
@@ -140,10 +159,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     }
     let res
     try {
-      async function find() {
-        return await doQuery(query)
-      }
-      res = await tryOrCreateTable(find, collectionName)
+      res = await tryOrCreateTable(async () => await doQuery(databaseName, query), databaseName, collectionName)
     } catch (e) {
       console.error(e)
       res = { rows: [] }
@@ -162,7 +178,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     const where = mongoToPostgres('data', doc.query, getArrayPaths(rawCollectionName))
     const data = { n: 0, ok: 1 }
     try {
-      const res = await doQuery(`SELECT COUNT(*) FROM ${collectionName} WHERE ${where}`)
+      const res = await doQuery(databaseName, `SELECT COUNT(*) FROM ${collectionName} WHERE ${where}`)
       data.n = res.rows[0].count
       if (doc.skip) {
         data.n = Math.max(0, data.n - doc.skip)
@@ -184,7 +200,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
       const newValue = mongoToPostgres.convertUpdate('data', update.u)
       // TODO (handle multi)
       await createTable(collectionName)
-      res = await doQuery(`UPDATE ${collectionName} SET data = ${newValue} WHERE ${where}`)
+      res = await doQuery(databaseName, `UPDATE ${collectionName} SET data = ${newValue} WHERE ${where}`)
       if (res.rowCount === 0 && update.upsert) {
         const changes = update.u || {}
         if (mongoToPostgres.countUpdateSpecialKeys(changes) === 0) {
@@ -196,12 +212,12 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
         }
         const newValue = mongoToPostgres.convertUpdate('data', changes, true)
         async function insert() {
-          const res = await doQuery(`INSERT INTO ${collectionName} VALUES (${newValue})`)
+          const res = await doQuery(databaseName, `INSERT INTO ${collectionName} VALUES (${newValue})`)
           const data = { n: res.rowCount, nInserted: res.rowCount, updatedExisting: false, ok: 1 }
           socket.write(build(reqId, data, {}))
         }
 
-        await tryOrCreateTable(insert, collectionName)
+        await tryOrCreateTable(insert, databaseName, collectionName)
         return true
       } else {
         lastResult.n = res.rowCount
@@ -231,12 +247,12 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     arrayPathsMap[rawCollectionName] = _.union(arrayPathsMap[rawCollectionName], util.getArrayPaths(doc.documents[0]))
     const newValues = doc.documents.map((values) => '(' + mongoToPostgres.convertUpdate('data', values) + ')')
     async function insert() {
-      const res = await doQuery(`INSERT INTO ${collectionName} VALUES ${newValues.join(',')}`)
+      const res = await doQuery(databaseName, `INSERT INTO ${collectionName} VALUES ${newValues.join(',')}`)
       const data = { n: res.rowCount, nInserted: res.rowCount, updatedExisting: false, ok: 1 }
       socket.write(build(reqId, data, {}))
     }
 
-    await tryOrCreateTable(insert, collectionName)
+    await tryOrCreateTable(insert, databaseName, collectionName)
     return true
   }
   if (commandName === 'create') {
@@ -252,16 +268,16 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
         // TODO: handle limits on deletion
         //query += ' LIMIT ' + doc.deletes[0].limit
       }
-      const res = await doQuery(query)
+      const res = await doQuery(databaseName, query)
       lastResult.n = res.rowCount
       return socket.write(build(reqId, lastResult, lastResult))
     }
-    await tryOrCreateTable(del, collectionName)
+    await tryOrCreateTable(del, databaseName, collectionName)
     return true
   }
   if (commandName === 'drop') {
     try {
-      await doQuery(`DROP TABLE ${collectionName}`)
+      await doQuery(databaseName, `DROP TABLE ${collectionName}`)
     } catch (e) {
       // often not an error if already doesn't exist
     }
@@ -269,7 +285,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     return true
   }
   if (commandName === 'validate') {
-    const countRes = await client.query(`SELECT COUNT(*) FROM ${collectionName}`)
+    const countRes = await doQuery(`SELECT COUNT(*) FROM ${collectionName}`)
     const data = {
       'ns' : databaseName + '.' + collectionName,
       'nrecords' : countRes.rows[0].count,
@@ -284,7 +300,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
   }
   if (normalizedCommandName === 'listindexes') {
     const listIQuery = util.listIndicesQuery('data', rawCollectionName)
-    const indexRes = await doQuery(listIQuery)
+    const indexRes = await doQuery(databaseName, listIQuery)
     const indices = indexRes.rows.map((row) => ({
       v: 2,
       key: { _id: 1 },
@@ -307,7 +323,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
       ok: 1
     }
     const listIQuery = util.listIndicesQuery('data', rawCollectionName)
-    const indexRes = await doQuery(listIQuery)
+    const indexRes = await doQuery(databaseName, listIQuery)
     const indices = indexRes.rows.map((row) => row.index_name)
     data.createIndexes.numIndexesBefore = indices.length
     for (const index of doc.indexes) {
@@ -325,7 +341,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
       }).join(', ')
       let indexQuery = `CREATE INDEX "${index.name}" ON ${collectionName} USING gin ((${pgPath}));`
       try {
-        await doQuery(indexQuery)
+        await doQuery(databaseName, indexQuery)
       } catch (e) {
         console.error('failed to create index')
         //console.error(e)
@@ -346,7 +362,7 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
     let query = `ALTER TABLE ${collectionName} RENAME TO "${newName}"`
     query = doc.dropTarget ? `DROP TABLE IF EXISTS ${newName}; ${query}` : query
     try {
-      await doQuery(query)
+      await doQuery(databaseName, query)
     } catch (e) {
       data.ok = 0
       console.error(e)
@@ -356,18 +372,19 @@ async function crud(socket, reqId, databaseName, commandName, doc, build) {
   }
 }
 
-async function processAdmin(socket, reqId, commandName, doc) {
+async function processAdmin(databaseName, socket, reqId, commandName, doc) {
+  let res
+  let reply
   switch (commandName) {
     case 'listdatabases':
-      let res
       try {
-        res = await doQuery('SELECT datname AS name FROM pg_database WHERE datistemplate = false')
+        res = await doQuery('postgres', 'SELECT datname AS name FROM pg_database WHERE datistemplate = false')
       } catch (e) {
         console.error(e)
         res = { rows: [] }
       }
-      const data = { 'databases': res.rows, 'ok': 1 }
-      socket.write(wire.createCommandReply(reqId, data, data))
+      reply = { 'databases': res.rows, 'ok': 1 }
+      socket.write(wire.createCommandReply(reqId, reply, reply))
       break
     case 'whatsmyuri':
       socket.write(wire.createCommandReply(reqId, {}, { 'you': '127.0.0.1:56709', 'ok': 1 }))
@@ -391,7 +408,7 @@ async function processAdmin(socket, reqId, commandName, doc) {
       socket.write(wire.createCommandReply(reqId, adminReplies.getServerStatus(), {}))
       break
     case 'currentop':
-      const reply = {
+      reply = {
         inprog: [],
         ok: 1
       }
@@ -433,9 +450,11 @@ async function handleRecord(socket, data, opCode, reqId) {
     if (collectionName === 'admin.$cmd' && (doc.isMaster || doc.ismaster)) {
       return socket.write(wire.createResponse(reqId, adminReplies.getIsMasterReply()))
     }
+    const parts = collectionName.split('.')
+    const databaseName = parts[0]
     for (const command of commands) {
       if (doc[command] || doc[command.toLowerCase()]) {
-        if (await crud(socket, reqId, '', command, doc, wire.createResponse))
+        if (await crud(socket, reqId, databaseName, command, doc, wire.createResponse))
           return
       }
     }
@@ -447,7 +466,7 @@ async function handleRecord(socket, data, opCode, reqId) {
       return
 
     if (databaseName === 'admin' || databaseName === 'db') {
-      if (await processAdmin(socket, reqId, commandName, doc))
+      if (await processAdmin(databaseName, socket, reqId, commandName, doc))
         return
     }
 
@@ -458,7 +477,7 @@ async function handleRecord(socket, data, opCode, reqId) {
       case 'buildinfo':
         return socket.write(wire.createCommandReply(reqId, adminReplies.getBuildInfo(), {}))
       case 'listcollections':
-        res = await client.query('SELECT table_name FROM information_schema.tables WHERE table_schema=\'public\' AND table_type=\'BASE TABLE\';')
+        res = await doQuery(databaseName, 'SELECT table_name FROM information_schema.tables WHERE table_schema=\'public\' AND table_type=\'BASE TABLE\';')
         const tables = res.rows.map((row) => ({ name: row.table_name, type: 'collection', options: {}, info: { readOnly: false } }))
         const data = util.createCursor(`${databaseName}.$cmd.listCollections`, tables)
         return socket.write(wire.createCommandReply(reqId, data, data))
@@ -467,9 +486,8 @@ async function handleRecord(socket, data, opCode, reqId) {
       case 'getlasterror':
         return socket.write(wire.createCommandReply(reqId, lastResult, lastResult))
       case 'dropdatabase':
-        res = await doQuery('select string_agg(\'drop table "\' || tablename || \'" cascade\', \'; \') from pg_tables where schemaname = \'public\'')
-        const dropQuery = res.rows[0].string_agg
-        await doQuery(dropQuery)
+        res = await doQuery(databaseName, 'select string_agg(\'drop table "\' || tablename || \'" cascade\', \'; \') from pg_tables where schemaname = \'public\'')
+        await doQuery(databaseName, res.rows[0].string_agg)
         return socket.write(wire.createCommandReply(reqId, {}, { 'ok': 1 }))
     }
 
@@ -478,7 +496,6 @@ async function handleRecord(socket, data, opCode, reqId) {
   }
 }
 
-const mongoPort = parseInt(args[2] || '27018')
 server.listen(mongoPort, '127.0.0.1')
 console.log(`Connecting to postgres at ${pgHost}:5432`)
 console.log(`Serving Mongo on port ${mongoPort}`)

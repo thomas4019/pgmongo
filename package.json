@@ -1,6 +1,6 @@
 {
   "name": "pgmongo",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "description": "implements the Mongo wire protocol and adapts queries to use Postgres jsonb.",
   "main": "index.js",
   "scripts": {

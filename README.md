@@ -15,11 +15,11 @@ I've tested it with [Keystone.js](http://keystonejs.com/) and it seemed to work 
 pgmongo requires node 8 or newer and Postgres 9.4+. Then run the following.
 ```bash
 npm install -g pgmongo
-pgmongo mydatabase  # replace mydatabase with your PostgreSQL database name.
+pgmongo
 ```
 This will start a mongo-like server on port 27017. If you already have mongo running on your machine you can start it on a different port with the following.
 ```bash
-pgmongo mydatabase localhost 27018 
+pgmongo localhost 27018
 ```
 
 ## Supported Features
