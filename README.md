@@ -4,12 +4,17 @@
 </p>
 
 ## What is pgmongo?
-- **Drop-in replacement** Applications should not need code changes because pgmongo imitates a MongoDB server.
-- **Stateless proxy** pgmongo converts all queries and proxies to a Posgres database.
-- **JSON** Support for regular JSON data is better than full BSON since jsonb does not have all the advanced data types. 
+- **Drop-in replacement** Applications do not need code changes. pgmongo appears to your app as a MongoDB server.
+- **Stateless proxy** pgmongo rewrites queries and proxies them to a Postgres database.
+- **JSON** Primarily supports regular JSON data. Advanced BSON types like binary data, JavaSrcipt, ints and timestamps are not well supported.
 
 This implements the [MongoDB wire protocol](https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/) and adapts queries to work with a PostgreSQL database using jsonb fields.
 I've tested it with [Keystone.js](http://keystonejs.com/) and it seemed to work reasonably well.
+
+<p align="center">
+  <img alt="data flow diagram converting bson to jsonb" src="https://user-images.githubusercontent.com/406149/50381947-f0495980-0650-11e9-8c07-6f1f43fcd321.png">
+</p>
+
 
 ## Getting Started
 pgmongo requires node 8 or newer and Postgres 9.4+. Then run the following.
